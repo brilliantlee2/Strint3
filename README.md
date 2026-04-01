@@ -8,7 +8,7 @@ A prerocess tools for demultiplexing barcodes in MGI full-length single cell RNA
 
 2. add_cb_ur_tags.py  filtered.sorted.bam  read_tags.tsv python ../add_cb_ur_tags.py  --bam filtered.sorted.bam --tags read_tags.tsv  --output filtered.cb_ur.sorted.bam
 
-3. 比对参考辅助文件准备
+3. 比对参考辅助文件准备 bedtools bamtobed -i filtered.cb_ur.sorted.bam > filtered.cb_ur.bed &
 
 4. scripts/assign_genes.py python  ../assign_genes.py  --output filtered.read_gene_assigns.tsv filtered.cb_ur.bed /home/liyy/1.data/REF/GRCH38/genes.gtf
 
