@@ -1220,8 +1220,8 @@ def assign_reads_to_cells(df_reads,
                           barcode2cell,
                           dom_table,
                           dominance_min=0.80,
-                          bc5_col="BC5_30bp",
-                          bc3_col="BC3_30bp_rc",
+                          bc5_col="BC5n",
+                          bc3_col="BC3n",
                           read_id_col="read_id"):
     df = df_reads.copy()
     df["_b5"] = df[bc5_col].map(norm_bc)
