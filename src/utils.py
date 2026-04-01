@@ -1406,4 +1406,12 @@ def umi_missing_stats(df, col3="putative_umi", col5="putative_umi_5p"):
     out["ratio"] = out["count"] / n
     return out
 
-
+def check_barcodes(barcodes):
+    bad_len = [b for b in barcodes if len(b) != 10]
+    if bad_len:
+        raise ValueError(f"Found non-10bp barcodes (examples): {bad_len[:10]}")
+    bad_base = [b for b in barcodes if any(ch not in "ACGT" for ch in b)]
+    if bad_base:
+        raise ValueError(f"Found non-ACGT barcodes (examples): {bad_base[:10]}")
+    if len(barcodes) != len(set(barcodes)):
+        raise ValueError("Found duplicated barcodes. Please deduplicate first.")
