@@ -1,0 +1,52 @@
+{
+  "sc_upstream_pipeline.fastq": "/home/liyy/2.project/C4_V3/20260326/250F701400011_3/260F100027011.full-length.fq.gz",
+  "sc_upstream_pipeline.whitelist_3p": "/home/liyy/2.project/C4_V3/Strint3/whitelist_3p_3seg_rc.txt.gz",
+  "sc_upstream_pipeline.whitelist_5p": "/home/liyy/2.project/C4_V3/Strint3/whitelist_5p_3seg.txt.gz",
+
+  "sc_upstream_pipeline.genome_fa": "/home/liyy/1.data/REF/GRCm39/genome.fa",
+  "sc_upstream_pipeline.junction_bed": "/home/liyy/1.data/REF/GRCm39/genes.bed",
+  "sc_upstream_pipeline.chrom_sizes": "/home/liyy/1.data/REF/GRCm39/chrom_sizes.tsv",
+  "sc_upstream_pipeline.gene_gtf": "/home/liyy/1.data/REF/GRCm39/genes.gtf",
+  "sc_upstream_pipeline.isoform_gtf": "/home/liyy/1.data/REF/GRCm39/genes.gtf",
+
+  "sc_upstream_pipeline.main_py": "/home/liyy/2.project/C4_V3/Strint3/main.py",
+  "sc_upstream_pipeline.prepare_read_tags_py": "/home/liyy/2.project/C4_V3/Strint3/scripts/prepare_read_tags.py",
+  "sc_upstream_pipeline.add_cb_ur_tags_py": "/home/liyy/2.project/C4_V3/Strint3/scripts/add_cb_ur_tags.py",
+  "sc_upstream_pipeline.assign_genes_py": "/home/liyy/2.project/C4_V3/Strint3/scripts/assign_genes.py",
+  "sc_upstream_pipeline.add_gene_tags_py": "/home/liyy/2.project/C4_V3/Strint3/scripts/add_gene_tags.py",
+  "sc_upstream_pipeline.cluster_umis_allbam_py": "/home/liyy/2.project/C4_V3/Strint3/scripts/cluster_umis_allbam.py",
+  "sc_upstream_pipeline.cell_umi_gene_table_py": "/home/liyy/2.project/C4_V3/Strint3/scripts/cell_umi_gene_table.py",
+  "sc_upstream_pipeline.gene_expression_py": "/home/liyy/2.project/C4_V3/Strint3/scripts/gene_expression.py",
+  "sc_upstream_pipeline.assign_transcripts_py": "/home/liyy/2.project/C4_V3/Strint3/scripts/assign_transcripts.py",
+  "sc_upstream_pipeline.isoform_expression_py": "/home/liyy/2.project/C4_V3/Strint3/scripts/isoform_expression.py",
+  "sc_upstream_pipeline.rna_qc_metrics_py": "/home/liyy/2.project/C4_V3/Strint3/scripts/rna_qc_metrics.py",
+  "sc_upstream_pipeline.saturation_py": "/home/liyy/2.project/C4_V3/Strint3/scripts/Saturation.py",
+
+  "sc_upstream_pipeline.sample_id": "test_simple",
+
+  "sc_upstream_pipeline.strint_threads": 32,
+  "sc_upstream_pipeline.strint_batch_size": 100000,
+  "sc_upstream_pipeline.strint_assign_batchsize": 10000,
+  "sc_upstream_pipeline.minimap2_threads": 32,
+  "sc_upstream_pipeline.cluster_umi_threads": 8,
+
+  "sc_upstream_pipeline.exp_cells": 5000,
+  "sc_upstream_pipeline.min_q": 7,
+  "sc_upstream_pipeline.max_ed": 7,
+  "sc_upstream_pipeline.empty_drop_min_ed": 5,
+  "sc_upstream_pipeline.empty_drop_num": 2000,
+  "sc_upstream_pipeline.pair_min": 10,
+  "sc_upstream_pipeline.top1_alpha": 0.7,
+  "sc_upstream_pipeline.dominance_min": 0.8,
+  "sc_upstream_pipeline.drop_umiA_ratio_gt": 0.5,
+
+  "sc_upstream_pipeline.gene_assign_mapq": 60,
+  "sc_upstream_pipeline.gene_assign_chunk_size": 200000,
+  "sc_upstream_pipeline.transcript_assign_mapq": 60,
+  "sc_upstream_pipeline.transcript_assign_chunk_size": 200000,
+  "sc_upstream_pipeline.ref_interval": 1000,
+  "sc_upstream_pipeline.cell_gene_max_reads": 20000,
+
+  "sc_upstream_pipeline.save_intermediate": false,
+  "sc_upstream_pipeline.require_pass_both_ends": false
+}

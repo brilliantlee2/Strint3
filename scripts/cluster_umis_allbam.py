@@ -1,16 +1,16 @@
-# This code makes significant use of the UMI-tools package (MIT license).
-#
-# https://github.com/CGATOxford/UMI-tools
-# https://genome.cshlp.org/content/early/2017/01/18/gr.209601.116.abstract
-#
-# Modified to support a whole BAM as input rather than chromosome-split BAMs.
+# cluster_umis_allbam_v3.py
+# Whole-BAM version of Sockeye UMI clustering.
+# Processes one contig at a time, writes temporary contig BAMs without indexing,
+# then merges -> sorts -> indexes only the final BAM.
 
 import argparse
 import collections
 import itertools
 import logging
 import multiprocessing
+import os
 import pathlib
+import subprocess
 import tempfile
 
 import numpy as np
@@ -56,7 +56,7 @@ def parse_args():
     parser.add_argument(
         "-t",
         "--threads",
-        help="Threads to use [4]",
+        help="Threads to use for per-contig groupby and final sort/index [4]",
         type=int,
         default=4,
     )
@@ -70,8 +70,9 @@ def parse_args():
 
     args = parser.parse_args()
 
-    p = pathlib.Path(args.output)
-    tempdir = tempfile.TemporaryDirectory(prefix="tmp.", dir=str(p.parents[0]))
+    p = pathlib.Path(args.output).resolve()
+    tempdir = tempfile.TemporaryDirectory(prefix="tmp.cluster_umis.", dir=str(p.parent))
+    args.tempdir_obj = tempdir
     args.tempdir = tempdir.name
 
     return args
@@ -105,10 +106,11 @@ def breadth_first_search(node, adj_list):
 def get_adj_list_directional(umis, counts, threshold=2):
     """
     Identify all UMIs within the Levenshtein distance threshold
-    and where the counts of the first UMI is > (2 * second UMI counts)-1.
+    and where the counts of the first UMI is >= (2 * second UMI counts) - 1.
     """
     adj_list = {umi: [] for umi in umis}
     iter_umi_pairs = itertools.combinations(umis, 2)
+
     for umi1, umi2 in iter_umi_pairs:
         if edit_distance(umi1, umi2) <= threshold:
             if counts[umi1] >= (counts[umi2] * 2) - 1:
@@ -128,12 +130,14 @@ def get_connected_components_adjacency(umis, graph, counts):
             component = breadth_first_search(node, graph)
             found.update(component)
             components.append(component)
+
     return components
 
 
 def group_directional(clusters, adj_list, counts):
     observed = set()
     groups = []
+
     for cluster in clusters:
         if len(cluster) == 1:
             groups.append(list(cluster))
@@ -183,8 +187,7 @@ def create_region_name(align, args):
     interval_start = np.floor(midpoint / args.ref_interval) * args.ref_interval
     interval_end = np.ceil(midpoint / args.ref_interval) * args.ref_interval
 
-    gene = f"{chrom}_{int(interval_start)}_{int(interval_end)}"
-    return gene
+    return f"{chrom}_{int(interval_start)}_{int(interval_end)}"
 
 
 def chunks(lst, n):
@@ -193,6 +196,12 @@ def chunks(lst, n):
 
 
 def launch_pool(func, func_args, procs=1):
+    if len(func_args) == 0:
+        return []
+
+    if procs <= 1:
+        return [func(x) for x in tqdm(func_args, total=len(func_args))]
+
     p = multiprocessing.Pool(processes=procs)
     try:
         results = list(tqdm(p.imap(func, func_args), total=len(func_args)))
@@ -205,22 +214,31 @@ def launch_pool(func, func_args, procs=1):
 
 
 def run_groupby(df):
+    df = df.copy()
     df["umi_corr"] = df.groupby(["gene_cell"])["umi_uncorr"].transform(correct_umis)
     return df
 
 
-def collect_records_from_bam(input_bam, args):
-    """
-    Read all alignments from the BAM, extract read_id / gene / barcode / UR,
-    and return a dataframe for UMI clustering.
-    """
+def get_bam_info(bam_path):
+    bam = pysam.AlignmentFile(bam_path, "rb")
+    stats = bam.get_index_statistics()
+    bam.close()
+
+    n_aligns = int(sum([contig.mapped for contig in stats]))
+    chroms = collections.OrderedDict(
+        [(contig.contig, contig.mapped) for contig in stats if contig.mapped > 0]
+    )
+    return n_aligns, chroms
+
+
+def collect_records_for_contig(input_bam, chrom, args):
     bam = pysam.AlignmentFile(input_bam, "rb")
 
     records = []
     cell_gene_counter = collections.Counter()
 
-    logger.info(f"Collecting read/gene/barcode/UMI records from {input_bam}")
-    for align in tqdm(bam.fetch(until_eof=True)):
+    logger.info(f"[{chrom}] collecting read/gene/barcode/UMI records")
+    for align in bam.fetch(contig=chrom):
         if align.is_unmapped:
             continue
 
@@ -245,56 +263,56 @@ def collect_records_from_bam(input_bam, args):
     df = pd.DataFrame.from_records(
         records, columns=["read_id", "gene", "bc", "umi_uncorr"]
     )
+    logger.info(f"[{chrom}] collected {df.shape[0]} usable records")
     return df
 
 
-def compute_corrected_umis(df, args):
-    """
-    Run per-(gene, cell) UMI correction on the dataframe.
-    Returns:
-      umis: dict read_id -> corrected UMI
-      genes: dict read_id -> gene label
-    """
+def compute_corrected_umis_for_contig(df, chrom, args):
     if df.shape[0] == 0:
         return {}, {}
 
+    logger.info(f"[{chrom}] building gene-cell groups")
+    df = df.copy()
     df["gene_cell"] = df["gene"] + ":" + df["bc"]
     df = df.set_index("gene_cell")
 
     gene_cell_unique = list(set(df.index))
+    logger.info(f"[{chrom}] total gene-cell groups: {len(gene_cell_unique)}")
+
     gene_cell_per_chunk = 50
-    gene_cell_chunks = chunks(gene_cell_unique, gene_cell_per_chunk)
+    gene_cell_chunks = list(chunks(gene_cell_unique, gene_cell_per_chunk))
 
     func_args = []
     for gene_cell_chunk in gene_cell_chunks:
-        df_ = df.loc[gene_cell_chunk]
-        func_args.append(df_)
+        df_chunk = df.loc[gene_cell_chunk]
+        if isinstance(df_chunk, pd.Series):
+            df_chunk = df_chunk.to_frame().T
+        func_args.append(df_chunk)
 
-    logger.info("Clustering and correcting UMIs")
+    logger.info(f"[{chrom}] clustering UMIs across {len(func_args)} chunks")
     results = launch_pool(run_groupby, func_args, args.threads)
 
     if len(results) > 0:
+        logger.info(f"[{chrom}] concatenating chunk results")
         df = pd.concat(results, axis=0)
     else:
         df = pd.DataFrame(columns=["read_id", "gene", "bc", "umi_uncorr", "umi_corr"])
 
+    logger.info(f"[{chrom}] converting corrected UMIs to dictionaries")
     df = df.drop(["bc", "umi_uncorr"], axis=1).set_index("read_id")
+    umis = df["umi_corr"].to_dict()
+    genes = df["gene"].to_dict()
 
-    umis = df.to_dict()["umi_corr"]
-    genes = df.to_dict()["gene"]
+    logger.info(f"[{chrom}] corrected reads: {len(umis)}")
     return umis, genes
 
 
-def add_tags_all(umis, genes, args):
-    """
-    Write UB/GN tags back to the whole BAM.
-    Existing alignments are preserved; UB/GN are added where a read_id match exists.
-    """
-    bam = pysam.AlignmentFile(args.bam, "rb")
-    bam_out = pysam.AlignmentFile(args.output, "wb", template=bam)
+def write_contig_bam(input_bam, chrom, umis, genes, out_bam_path):
+    bam = pysam.AlignmentFile(input_bam, "rb")
+    bam_out = pysam.AlignmentFile(out_bam_path, "wb", template=bam)
 
-    logger.info(f"Writing corrected tags to {args.output}")
-    for align in tqdm(bam.fetch(until_eof=True)):
+    logger.info(f"[{chrom}] writing corrected BAM -> {out_bam_path}")
+    for align in bam.fetch(contig=chrom):
         read_id = align.query_name
 
         if (umis.get(read_id) is not None) and (genes.get(read_id) is not None):
@@ -305,21 +323,57 @@ def add_tags_all(umis, genes, args):
 
     bam.close()
     bam_out.close()
+    logger.info(f"[{chrom}] finished writing temporary BAM")
 
-    logger.info(f"Indexing {args.output}")
-    pysam.index(args.output)
+
+def merge_contig_bams(contig_bams, output_bam, threads=1):
+    if len(contig_bams) == 0:
+        raise ValueError("No contig BAMs were produced")
+
+    output_bam = os.path.abspath(output_bam)
+    merged_tmp_bam = output_bam.replace(".bam", ".merged.tmp.bam")
+
+    logger.info(f"Merging {len(contig_bams)} contig BAMs into temporary BAM")
+    pysam.merge("-f", merged_tmp_bam, *contig_bams)
+
+    logger.info(f"Sorting merged BAM into {output_bam}")
+    pysam.sort("-@", str(threads), "-o", output_bam, merged_tmp_bam)
+
+    logger.info(f"Indexing final BAM {output_bam}")
+    subprocess.run(["samtools", "index", "-@", str(threads), output_bam], check=True)
+
+    if os.path.exists(merged_tmp_bam):
+        os.remove(merged_tmp_bam)
 
 
 def main(args):
     init_logger(args)
 
-    df = collect_records_from_bam(args.bam, args)
-    logger.info(f"Collected {df.shape[0]} records for UMI correction")
+    n_aligns, chroms = get_bam_info(args.bam)
+    logger.info(
+        f"Input BAM has {n_aligns} mapped alignments across {len(chroms)} contigs"
+    )
 
-    umis, genes = compute_corrected_umis(df, args)
-    logger.info(f"Computed corrected UMI tags for {len(umis)} reads")
+    contig_bams = []
 
-    add_tags_all(umis, genes, args)
+    for chrom, n_mapped in chroms.items():
+        logger.info(f"[{chrom}] start processing ({n_mapped} mapped reads)")
+
+        df = collect_records_for_contig(args.bam, chrom, args)
+        umis, genes = compute_corrected_umis_for_contig(df, chrom, args)
+
+        out_bam_path = os.path.join(args.tempdir, f"{chrom}.tagged.bam")
+        write_contig_bam(args.bam, chrom, umis, genes, out_bam_path)
+        contig_bams.append(out_bam_path)
+
+        logger.info(f"[{chrom}] cleaning up in-memory objects")
+        del df
+        del umis
+        del genes
+
+    logger.info("All contigs finished, starting final merge/sort/index")
+    merge_contig_bams(contig_bams, args.output, threads=args.threads)
+    logger.info(f"Finished writing {args.output}")
 
 
 if __name__ == "__main__":

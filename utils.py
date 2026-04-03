@@ -13,6 +13,7 @@ import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import networkx as nx
+import sys
 
 # a light class for a read in fastq file
 read_tuple = namedtuple('read_tuple', ['id', 'seq', 'q_letter'])
@@ -620,16 +621,27 @@ def assign_read(fastq_fns=None, fastq_out=None, putative_bc_csv=None,
     if n_process == 1:
         demul_count_tot = 0
         count_tot = 0
+        df_list = []
         with open(fastq_out, 'wb') as output_handle, open(unmatched_out, 'wb') as unmatched_handle:
             pbar = tqdm(unit="Reads", desc='Processed')
             for r_batch in r_batches:
-                _, b_fast_str, demul_count, read_count, b_unmatched_fastq = assign_read_batches(r_batch, whitelist_3p_list, whitelist_5p_list, max_ed,  gz, minQ=0, emit_unmatched_fastq=True)
+                df, b_fast_str, demul_count, read_count, b_unmatched_fastq = assign_read_batches(
+                    r_batch,
+                    whitelist_3p_list,
+                    whitelist_5p_list,
+                    max_ed,
+                    gz,
+                    minQ=0,
+                    emit_unmatched_fastq=True,
+                )
                 demul_count_tot += demul_count
                 count_tot += read_count
                 output_handle.write(b_fast_str)
                 if b_unmatched_fastq:
                     unmatched_handle.write(b_unmatched_fastq)
+                df_list.append(df)
                 pbar.update(read_count) #
+        big_df = pd.concat(df_list, ignore_index=True) if df_list else pd.DataFrame()
         green_msg(f"Reads assignment completed. Demultiplexed read saved in {fastq_out}!")
         green_msg(f"Unmatched reads saved in: {unmatched_out}!")
         
@@ -1079,6 +1091,8 @@ def revcomp(seq):
     seq = seq.upper()
     return seq.translate(_rc_map)[::-1]
 
+FIX6_A  = "GCTACC"
+FIX5_B  = "AGATC"
 def strip_fixed_3p(seq):
     """
     BC3: BC1(10) + AGATC(5) + BC2(10) + GCTACC(6) + BC3(10) = 41
@@ -1094,6 +1108,8 @@ def strip_fixed_3p(seq):
         return bc1 + bc2 + bc3
     return ""
 
+FIX6_A_5p = "CCTTCC"
+FIX5_B_5p = "TGCTG"
 def strip_fixed_5p(seq):
     """
     BC5: BC1(10) + CCTTCC(6) + BC2(10) + TGCTG(5) + BC3(10) = 41
@@ -1415,3 +1431,182 @@ def check_barcodes(barcodes):
         raise ValueError(f"Found non-ACGT barcodes (examples): {bad_base[:10]}")
     if len(barcodes) != len(set(barcodes)):
         raise ValueError("Found duplicated barcodes. Please deduplicate first.")
+
+def norm_umi(x):
+    if pd.isna(x):
+        return ""
+    s = str(x).strip().upper()
+    return "" if s in ("", "NA", "NAN", "NONE") else s
+
+def a_ratio(seq: str) -> float:
+    if not seq:
+        return 0.0
+    s = seq.upper()
+    return s.count("A") / len(s) if len(s) > 0 else 0.0
+
+def filter_pairs_three_stage(
+    df_reads: pd.DataFrame,
+    bc5_col="BC5_30bp",
+    bc3_col="BC3_30bp_rc",
+    umi3_col="putative_umi",
+    umi5_col="putative_umi_5p",
+    read_id_col="read_id",
+    # ---- filters ----
+    PAIR_MIN=10,
+    TOP1_ALPHA=0.7,
+    require_pass_both_ends=False,   # False: 任意一端通过就保留；True: 两端都通过才保留（更严）
+    # ---- umi A ratio ----
+    drop_umiA_ratio_gt=0.5,         # 只针对 putative_umi（3'端）过滤：A占比>0.5 删
+    # ---- misc ----
+    keep_pair_support_col=True,     # df_paired_kept里是否保留support_reads列
+):
+    """
+    输入df_reads:
+      必须包含 read_id / BC5_30bp / BC3_30bp_rc / putative_umi / putative_umi_5p
+      （BC列允许为空，表示单端）
+    输出:
+      df_final, df_single_end, df_paired_final,
+      pair_counts_all, pair_counts_min_kept, pair_counts_final,
+      dropped_pairs (含原因), stats
+    """
+
+    df = df_reads.copy()
+
+    # ========= 0) 规范化 barcode / umi =========
+    df["_b5"] = df[bc5_col].map(norm_bc) if bc5_col in df.columns else ""
+    df["_b3"] = df[bc3_col].map(norm_bc) if bc3_col in df.columns else ""
+    df["_umi3"] = df[umi3_col].map(norm_umi) if umi3_col in df.columns else ""
+    df["_umi5"] = df[umi5_col].map(norm_umi) if umi5_col in df.columns else ""
+
+    n0 = len(df)
+
+    # 0a) 去掉两端 barcode 都空
+    mask_any_bc = (df["_b5"] != "") | (df["_b3"] != "")
+    df = df[mask_any_bc].copy()
+    n_drop_both_empty_bc = int(n0 - len(df))
+
+    # 0b) 去掉 putative_umi（3'）里 A 占比 > 0.5 的行（你要求只看 putative_umi）
+    if umi3_col in df.columns:
+        mask_badA = df["_umi3"].apply(lambda s: a_ratio(s) > drop_umiA_ratio_gt)
+        n_drop_badA = int(mask_badA.sum())
+        df = df[~mask_badA].copy()
+    else:
+        n_drop_badA = 0
+
+    # ========= 1) 剥离 paired / single =========
+    mask_paired = (df["_b5"] != "") & (df["_b3"] != "")
+    df_paired = df[mask_paired].copy()
+    df_single_end = df[~mask_paired].copy()
+
+    # ========= 2) 统计 pair 支持数 =========
+    pair_counts_all = (
+        df_paired.groupby(["_b5", "_b3"])
+        .size()
+        .reset_index(name="support_reads")
+        .rename(columns={"_b5": "BC5n", "_b3": "BC3n"})
+        .sort_values("support_reads", ascending=False)
+        .reset_index(drop=True)
+    )
+
+    # ========= 3) Stage-1: PAIR_MIN =========
+    pair_counts_min_kept = pair_counts_all[pair_counts_all["support_reads"] >= PAIR_MIN].copy()
+    pair_counts_min_drop = pair_counts_all[pair_counts_all["support_reads"] < PAIR_MIN].copy()
+    pair_counts_min_drop = pair_counts_min_drop.assign(drop_reason=f"pair_min<{PAIR_MIN}")
+
+    # 将 support_reads merge 回 paired reads
+    df_paired2 = df_paired.merge(
+        pair_counts_all, left_on=["_b5", "_b3"], right_on=["BC5n", "BC3n"], how="left"
+    )
+    df_paired_min_kept = df_paired2[df_paired2["support_reads"] >= PAIR_MIN].copy()
+
+    # ========= 4) Stage-2: Top1-anchor (alpha) =========
+    # 先把 pair 表转成“无向视角”的 long：barcode -> partner
+    pc = pair_counts_min_kept.copy()
+    long = pd.concat([
+        pc.rename(columns={"BC5n": "barcode", "BC3n": "partner", "support_reads": "w"}),
+        pc.rename(columns={"BC3n": "barcode", "BC5n": "partner", "support_reads": "w"}),
+    ], ignore_index=True)
+
+    # 每个 barcode 的 top1_w
+    top1 = (
+        long.sort_values(["barcode", "w"], ascending=[True, False])
+        .groupby("barcode")
+        .head(1)[["barcode", "partner", "w"]]
+        .rename(columns={"partner": "top1_partner", "w": "top1_w"})
+        .reset_index(drop=True)
+    )
+    top1_map = top1.set_index("barcode")["top1_w"].to_dict()
+
+    # 对每条边 (u,v,w)，判断是否通过 Top1-anchor
+    def edge_keep(u, v, w):
+        t_u = top1_map.get(u, None)
+        t_v = top1_map.get(v, None)
+        pass_u = (t_u is not None) and (w >= TOP1_ALPHA * t_u)
+        pass_v = (t_v is not None) and (w >= TOP1_ALPHA * t_v)
+        return (pass_u and pass_v) if require_pass_both_ends else (pass_u or pass_v)
+
+    pc2 = pc.copy()
+    # 注意：pc2 的两列是 BC5n/BC3n（有向），但我们的规则是无向的，所以对 (u,v) 直接算
+    pc2["keep_top1"] = pc2.apply(lambda r: edge_keep(r["BC5n"], r["BC3n"], r["support_reads"]), axis=1)
+
+    pair_counts_final = pc2[pc2["keep_top1"]].drop(columns=["keep_top1"]).copy()
+    pair_counts_top1_drop = pc2[~pc2["keep_top1"]].drop(columns=["keep_top1"]).copy()
+    pair_counts_top1_drop = pair_counts_top1_drop.assign(drop_reason=f"top1_anchor_alpha<{TOP1_ALPHA}")
+
+    # ========= 5) 应用 Stage-2 到 paired reads =========
+    # 只保留出现在 pair_counts_final 的 paired reads
+    df_paired_min_kept = df_paired_min_kept.rename(columns={"BC5n": "BC5n", "BC3n": "BC3n"})
+    df_paired_final = df_paired_min_kept.merge(
+        pair_counts_final[["BC5n", "BC3n"]],   # 不要带 support_reads
+        on=["BC5n", "BC3n"],
+        how="inner"
+    )
+
+    if not keep_pair_support_col and "support_reads" in df_paired_final.columns:
+        df_paired_final = df_paired_final.drop(columns=["support_reads"], errors="ignore")
+
+    # ========= 6) 合并回最终 df =========
+    # 单端 reads 全保留（你后续再做吸附/归并策略）
+    df_final = pd.concat([df_single_end, df_paired_final], ignore_index=True)
+
+    # ========= 7) dropped_pairs 汇总 =========
+    dropped_pairs = pd.concat([pair_counts_min_drop, pair_counts_top1_drop], ignore_index=True)
+
+    # ========= 8) stats =========
+    stats = {
+        "rows_in": int(n0),
+        "drop_both_empty_bc": int(n_drop_both_empty_bc),
+        "drop_putative_umi_A_ratio_gt": float(drop_umiA_ratio_gt),
+        "drop_putative_umi_badA_rows": int(n_drop_badA),
+
+        "single_end_reads": int(len(df_single_end)),
+        "paired_reads_before": int(len(df_paired)),
+
+        "pairs_total": int(len(pair_counts_all)),
+        "pairs_kept_pair_min": int(len(pair_counts_min_kept)),
+        "pairs_dropped_pair_min": int(len(pair_counts_min_drop)),
+
+        "pairs_kept_final": int(len(pair_counts_final)),
+        "pairs_dropped_top1": int(len(pair_counts_top1_drop)),
+
+        "paired_reads_kept_final": int(len(df_paired_final)),
+        "rows_out_final": int(len(df_final)),
+        "require_pass_both_ends": bool(require_pass_both_ends),
+        "PAIR_MIN": int(PAIR_MIN),
+        "TOP1_ALPHA": float(TOP1_ALPHA),
+    }
+
+    # 清理临时列
+    for dfx in (df_final, df_single_end, df_paired_final):
+        dfx.drop(columns=["_b5", "_b3", "_umi3", "_umi5"], errors="ignore", inplace=True)
+
+    return (
+        df_final,
+        df_single_end,
+        df_paired_final,
+        pair_counts_all,
+        pair_counts_min_kept,
+        pair_counts_final,
+        dropped_pairs,
+        stats
+    )
