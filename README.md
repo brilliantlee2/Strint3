@@ -19,13 +19,13 @@ The full workflow starts from full-length FASTQ and produces:
 
 ## Directory Layout
 
-- [main.py](/Users/liyy/Documents/Documents%20-%20liyy的MacBook%20Air/Projects/CodeX_Space/Strint3/main.py): upstream barcode splitting and cell assignment
-- [args_parser.py](/Users/liyy/Documents/Documents%20-%20liyy的MacBook%20Air/Projects/CodeX_Space/Strint3/args_parser.py): command-line arguments for `main.py`
-- [utils.py](/Users/liyy/Documents/Documents%20-%20liyy的MacBook%20Air/Projects/CodeX_Space/Strint3/utils.py): helper functions used by `main.py`
-- [scripts](/Users/liyy/Documents/Documents%20-%20liyy的MacBook%20Air/Projects/CodeX_Space/Strint3/scripts): downstream scripts for BAM tagging, gene assignment, UMI clustering, matrix generation, and QC
-- [sc_upstream_pipeline.wdl](/Users/liyy/Documents/Documents%20-%20liyy的MacBook%20Air/Projects/CodeX_Space/Strint3/sc_upstream_pipeline.wdl): one-command workflow definition
-- [sc_upstream_pipeline.inputs.json](/Users/liyy/Documents/Documents%20-%20liyy的MacBook%20Air/Projects/CodeX_Space/Strint3/sc_upstream_pipeline.inputs.json): example WDL inputs
-- [run_all.sh](/Users/liyy/Documents/Documents%20-%20liyy的MacBook%20Air/Projects/CodeX_Space/Strint3/run_all.sh): no-container full pipeline runner using the current shell/conda environment
+- [main.py](./main.py): upstream barcode splitting and cell assignment
+- [args_parser.py](./args_parser.py): command-line arguments for `main.py`
+- [utils.py](./utils.py): helper functions used by `main.py`
+- [scripts](./scripts): downstream scripts for BAM tagging, gene assignment, UMI clustering, matrix generation, and QC
+- [sc_upstream_pipeline.wdl](./sc_upstream_pipeline.wdl): one-command workflow definition
+- [sc_upstream_pipeline.inputs.json](./sc_upstream_pipeline.inputs.json): example WDL inputs
+- [run_all.sh](./run_all.sh): no-container full pipeline runner using the current shell/conda environment
 
 ## Prerequisites
 
@@ -129,7 +129,7 @@ The WDL runs the full pipeline:
 
 ### Update Inputs
 
-Edit [sc_upstream_pipeline.inputs.json](/Users/liyy/Documents/Documents%20-%20liyy的MacBook%20Air/Projects/CodeX_Space/Strint3/sc_upstream_pipeline.inputs.json) and set the real server paths for:
+Edit [sc_upstream_pipeline.inputs.json](./sc_upstream_pipeline.inputs.json) and set the real server paths for:
 
 - `fastq`
 - `whitelist_3p`
@@ -197,8 +197,8 @@ The workflow returns these main outputs:
 
 Two downstream scripts currently use fixed input filenames internally:
 
-- [20260402/rna_qc_metrics.py](/Users/liyy/Documents/Documents%20-%20liyy的MacBook%20Air/Projects/CodeX_Space/Strint3/20260402/rna_qc_metrics.py)
-- [20260402/Saturation.py](/Users/liyy/Documents/Documents%20-%20liyy的MacBook%20Air/Projects/CodeX_Space/Strint3/20260402/Saturation.py)
+- [scripts/rna_qc_metrics.py](./scripts/rna_qc_metrics.py)
+- [scripts/Saturation.py](./scripts/Saturation.py)
 
 The WDL handles this by creating local symbolic links before running them.
 
@@ -251,7 +251,7 @@ If QC or saturation fails:
 
 ## Step 3: Run Full Pipeline Without WDL
 
-If Docker or WDL execution is inconvenient on the server, you can run the full pipeline directly with [run_all.sh](/Users/liyy/Documents/Documents%20-%20liyy的MacBook%20Air/Projects/CodeX_Space/Strint3/run_all.sh).
+If Docker or WDL execution is inconvenient on the server, you can run the full pipeline directly with [run_all.sh](./run_all.sh).
 
 This mode uses the currently active shell environment, so please activate your conda environment first.
 
